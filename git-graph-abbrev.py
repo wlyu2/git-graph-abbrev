@@ -1,23 +1,25 @@
+#!/bin/python3
+
+'''
+Assumptions:
+    - Using GitPython module, the first element in the list of git.objects.commit.Commit.parents is the first parent of Git program.
+'''
+
+
 # pylint: disable=invalid-name
 
+
+# builtin modules
 from typing import List
 
+import argparse
 import datetime
+import os
 import tempfile
 
+
+# third-party modules
 import git
-
-# Assumptions:
-#   - Using GitPython module, the first element in the list of git.objects.commit.Commit.parents is the first parent of Git program.
-
-TEST_REPO_PATH = '/home/william/repo/meta-qt6'
-TEST_REF1 = 'master'
-TEST_REF2 = 'br'
-
-TEST_REPO_PATH = '/home/william/repo/meta-qt6'
-TEST_REF1 = 'v6.6.3'
-TEST_REF2 = 'dev'
-TEST_REF3 = 'v6.7.2'
 
 
 def find_lca(
@@ -143,7 +145,6 @@ def get_abbrev_log_graph(
     render_commits = find_relevant_commits(heads)
 
     # the faux repo for abbrev commit graph
-    # TODO: automatically delete after debugging
     with tempfile.TemporaryDirectory() as tmpdir:
         faux_repo = git.Repo.init(tmpdir)
 
@@ -190,8 +191,10 @@ def get_abbrev_log_graph(
             for c, abbrev_num in zip(new_growth[1:], abbrev_nums):
                 # Print the part that counts the number of commit abbreviations.
                 if abbrev_num > 0:
+                    copy_commit(faux_repo, c, f'{COMMIT_ABBREV}')
                     copy_commit(faux_repo, c,
                         f'{COMMIT_ABBREV} [{abbrev_num} commit(s) abbreviated]')
+                    copy_commit(faux_repo, c, f'{COMMIT_ABBREV}')
                 # Print the actual commit of interest.
                 c_type = COMMIT_HEAD if c in heads else COMMIT_REGULAR
                 c_shortsha = repo.git.rev_parse(c.hexsha, short=True)
@@ -233,18 +236,17 @@ def get_abbrev_log_graph(
     return '\n'.join(postproc_lines)
 
 
+def main():
+    parser = argparse.ArgumentParser(
+        description='Displays an abbreviated git log graph containing all specified commit references.')
+    parser.add_argument('commit_refs', nargs='+', type=str)
+
+    args = parser.parse_args()
+
+    repo = git.Repo(os.getcwd(), search_parent_directories=True)
+
+    print(get_abbrev_log_graph(repo, args.commit_refs))
+
+
 if __name__ == '__main__':
-    repo = git.Repo(TEST_REPO_PATH)
-
-    print(get_abbrev_log_graph(repo, [TEST_REF1, TEST_REF2, TEST_REF3, 'c693c25^']))
-    # print(get_abbrev_log_graph(repo, ['dev']))
-
-    # Find all the "branch-off" commits (some LCA of other commits) and leaves.
-    # These commits are to be rendered in the final abbreviated graph.
-
-
-    # Create a faux repo just to represent the abbreviated parent-child relationship of the commits to be rendered.
-
-    # Render the abbreviated graph.
-
-
+    main()
