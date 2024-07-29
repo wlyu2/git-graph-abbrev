@@ -1,5 +1,8 @@
 # pylint: disable=invalid-name
 
+from typing import List
+
+import datetime
 import tempfile
 
 import git
@@ -7,51 +10,14 @@ import git
 # Assumptions:
 #   - Using GitPython module, the first element in the list of git.objects.commit.Commit.parents is the first parent of Git program.
 
-TEST_REPO_PATH = ''
+TEST_REPO_PATH = '/home/william/repo/meta-qt6'
 TEST_REF1 = 'master'
 TEST_REF2 = 'br'
 
-TEST_REPO_PATH = ''
+TEST_REPO_PATH = '/home/william/repo/meta-qt6'
 TEST_REF1 = 'v6.6.3'
 TEST_REF2 = 'dev'
 TEST_REF3 = 'v6.7.2'
-
-
-class DiGraph:
-    class Vertex:
-        def __init__(self, my_id, extra):
-            self.id = my_id
-            self.extra = extra
-
-    def __init__(self):
-        self.vertices = {}  # a map from vertex ID to each Vertex
-        self.adjlist = {}  # a map from vertex ID to the neighbour vertices IDs
-
-    def arc_add(self, u, v):
-        pass
-
-    def vertex_add(self, v):
-        pass
-
-class DFS:
-    def __init__(self, graph: DiGraph):
-        self._graph = graph
-        self._visit = set()
-
-    def algo_dfs(self, start_id):
-        assert start_id not in self._visit
-
-        # CUSTOM POINT: entry
-
-        self._visit.add(start_id)
-
-        for next_id in self._graph.adjlist[start_id]:
-            if next_id in self._visit:
-                continue
-            self.algo_dfs(next_id)
-
-        # CUSTOM POINT: exit
-
 
 
 def find_lca(
@@ -92,25 +58,22 @@ def find_lca(
 
 # TODO: docstring
 def find_root(
-    commit_list: list[git.objects.commit.Commit]
+    commit_list: List[git.objects.commit.Commit]
 ) -> git.objects.commit.Commit:
 
     # Assume that there is at least one commit object to consider.
     assert len(commit_list) >= 1
 
     root = commit_list[0]
-    print(f'root = {root}')
     for c in commit_list[1:]:
-        print(f'c = {c}')
         root = find_lca(root, c)
-        print(f'root = {root}')
     return root
 
 
 # TODO: docstring
 def find_relevant_commits(
-    commit_list: list[git.objects.commit.Commit]
-) -> list[git.objects.commit.Commit]:
+    commit_list: List[git.objects.commit.Commit]
+) -> List[git.objects.commit.Commit]:
     shaset = set()  # a set of commit shasum for uniqueness of added commits
     render_commits = {}  # a map from shasum to commits to be rendered
 
@@ -133,10 +96,29 @@ def find_relevant_commits(
     return render_commits
 
 
+def copy_commit(
+    repo: git.repo.base.Repo,
+    commit: git.objects.commit.Commit,
+    message: str
+) -> None:
+    repo.index.commit(
+        message=message,
+        # We keep both author_date and commit_date since we do not know which
+        # Git uses when ordering the commit nodes in the git log.
+        author_date=datetime.datetime.fromtimestamp(
+            commit.authored_date,
+            tz=datetime.timezone(
+                datetime.timedelta(seconds=commit.author_tz_offset))),
+        commit_date=datetime.datetime.fromtimestamp(
+            commit.committed_date,
+            tz=datetime.timezone(
+                datetime.timedelta(seconds=commit.committer_tz_offset))))
+
+
 # TODO: docstring, typing
 def get_abbrev_log_graph(
-    heads: list[git.objects.commit.Commit],
-    main_head: git.objects.commit.Commit
+    repo: git.repo.base.Repo,
+    head_names: List[str]
 ) -> str:
     # The following are special strings added to commit message for log graph postprocessing.
 
@@ -149,74 +131,113 @@ def get_abbrev_log_graph(
             cls.ref_head_cnt += 1
             return f'{cls.PREFIX}_{cls.ref_head_cnt}'
 
-    COMMIT_ABBREV = 'COMMIT_ABBREV'
-    COMMIT_REGULAR = 'COMMIT_REGULAR'
+    COMMIT_ABBREV = 'COMMIT_TYPE1'
+    COMMIT_REGULAR = 'COMMIT_TYPE2'
+    COMMIT_HEAD = 'COMMIT_TYPE3'
+    COMMIT_TAG_LEN = len(COMMIT_ABBREV)
+
+    # a list of GitPython commit objects correspnding to commits in `head_names`
+    heads = [repo.commit(x) for x in head_names]
 
     # a map from shasum to commits to be rendered
     render_commits = find_relevant_commits(heads)
 
     # the faux repo for abbrev commit graph
     # TODO: automatically delete after debugging
-    faux_repo = git.Repo.init(tempfile.TemporaryDirectory().name)
-    print(faux_repo.working_dir)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        faux_repo = git.Repo.init(tmpdir)
 
-    # a map from shasums of commits to be rendered to shasum in faux repo
-    created = {}
+        # a map from shasums of commits needing render to shasum in faux repo
+        created = {}
 
-    # Create root commit.
-    faux_repo.index.commit(f'{COMMIT_REGULAR} root {str(root)}')
-    created[root.binsha] = faux_repo.commit('HEAD')
+        # Create root commit.
+        root = find_root(heads)
+        root_shortsha = repo.git.rev_parse(root.hexsha, short=True)
+        root_type = COMMIT_HEAD if root in heads else COMMIT_REGULAR
+        root_decor = repo.git.log(root.hexsha, '--decorate', '-1') \
+            .splitlines()[0][len('commit ') + len(root.hexsha):]
+        copy_commit(faux_repo, root,
+            f'{root_type} {root_shortsha} {root.message}{root_decor}')
+        created[root.binsha] = faux_repo.commit('HEAD')
 
-    # Create branch one by one for each head (commits of interest).
-    for head in heads:
-        # Find one branch.
-        new_growth = []  # the commits to be rendered on this branch
-        c = head
-        while True:
-            if c.binsha in render_commits:
-                new_growth.append(c)
-            if c.binsha in created:
-                break
-            # We only concern with the primary parent of a commit.
-            c = c.parents[0]
-        new_growth.reverse()
+        # Create branch one by one for each head (commits of interest).
+        for head in heads:
+            # Find one branch.
+            new_growth = []  # the commits to be rendered on this branch
+            abbrev_nums = []  # the number of abbreviation for each commit
+            abbrev_num = 0  # the number of abbreviation since last
+            c = head  # the current commit that we inspect
+            while True:
+                if c.binsha in render_commits:
+                    new_growth.append(c)
+                    # The -1 is needed because the added commit is counted.
+                    abbrev_nums.append(abbrev_num - 1)
+                    abbrev_num = 0
+                if c.binsha in created:
+                    break
+                # We only concern with the primary parent of a commit.
+                c = c.parents[0]
+                abbrev_num += 1
+            new_growth.reverse()
+            abbrev_nums.reverse()
 
-        print()
-        for c in new_growth:
-            print(c)
-        print()
+            # Create this branch.
+            # Check out to the commit where this branch is added.
+            budding_point = created[new_growth[0].binsha]
+            branch_name = RefHeadName.new()
+            faux_repo.create_head(branch_name, str(budding_point))
+            faux_repo.git.checkout(branch_name)
+            for c, abbrev_num in zip(new_growth[1:], abbrev_nums):
+                # Print the part that counts the number of commit abbreviations.
+                if abbrev_num > 0:
+                    copy_commit(faux_repo, c,
+                        f'{COMMIT_ABBREV} [{abbrev_num} commit(s) abbreviated]')
+                # Print the actual commit of interest.
+                c_type = COMMIT_HEAD if c in heads else COMMIT_REGULAR
+                c_shortsha = repo.git.rev_parse(c.hexsha, short=True)
+                c_decor = repo.git.log(c.hexsha, '--decorate', '-1') \
+                    .splitlines()[0][len('commit ') + len(c.hexsha):]
+                copy_commit(faux_repo, c,
+                    f'{c_type} {c_shortsha} {c.summary}{c_decor}')
+                created[c.binsha] = faux_repo.commit('HEAD')
 
-        # Create this branch.
-        # Check out to the commit where this branch is added.
-        budding_point = created[new_growth[0].binsha]
-        branch_name = RefHeadName.new()
-        faux_repo.create_head(branch_name, str(budding_point))
-        faux_repo.git.checkout(branch_name)
-        input()
-        for c in new_growth[1:]:
-            faux_repo.index.commit(f'{COMMIT_ABBREV}')
-            faux_repo.index.commit(f'{COMMIT_REGULAR} {c}')
-            created[c.binsha] = faux_repo.commit('HEAD')
+        abbrev_log = faux_repo.git.log(
+            '--all',
+            '--no-decorate',
+            '--graph',
+            '--oneline',
+            '--no-abbrev-commit')
 
+    # Postprocess the abbreviated graph.
+    postproc_lines = []  # the lines of abbrev. graph after post-processing
+    for line in abbrev_log.splitlines():
+        prefix_end = line.find('COMMIT_')
+        if prefix_end == -1:
+            postproc_lines.append(line)
+            continue
+
+        # Find the begin and end of shasum and 'COMMIT_' postprocessing string.
+        prefix_end += COMMIT_TAG_LEN + 1
+        prefix_start = prefix_end - (COMMIT_TAG_LEN + len(root.hexsha) + 2)
+        
+        prefix = line[prefix_start:prefix_end]
+        noprefix = line[:prefix_start] + line[prefix_end:]
+
+        # Change the commit node based on the commit type.
+        if COMMIT_ABBREV in prefix:
+            noprefix = noprefix.replace('*', '|', 1)
+        elif COMMIT_HEAD in prefix:
+            noprefix = noprefix.replace('*', '@', 1)
+        postproc_lines.append(noprefix)
+
+    return '\n'.join(postproc_lines)
 
 
 if __name__ == '__main__':
     repo = git.Repo(TEST_REPO_PATH)
 
-    master = repo.commit(TEST_REF1)
-    br = repo.commit(TEST_REF2)
-    test = repo.commit(TEST_REF3)
-
-    all_commits = find_relevant_commits([master, br, test])
-    for c in all_commits:
-        print(all_commits[c])
-    print()
-
-    root = find_root([master, br, test])
-    print(root)
-    print()
-
-    get_abbrev_log_graph([master, br, test], master)
+    print(get_abbrev_log_graph(repo, [TEST_REF1, TEST_REF2, TEST_REF3, 'c693c25^']))
+    # print(get_abbrev_log_graph(repo, ['dev']))
 
     # Find all the "branch-off" commits (some LCA of other commits) and leaves.
     # These commits are to be rendered in the final abbreviated graph.
@@ -226,5 +247,4 @@ if __name__ == '__main__':
 
     # Render the abbreviated graph.
 
-    # Postprocess the abbreviated graph.
 
