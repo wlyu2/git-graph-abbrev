@@ -1,1 +1,1 @@
-gitpython
+gitpython>=3.1.43
