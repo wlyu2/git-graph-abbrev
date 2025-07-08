@@ -158,7 +158,7 @@ def get_abbrev_log_graph(
         root_decor = repo.git.log(root.hexsha, '--decorate', '-1') \
             .splitlines()[0][len('commit ') + len(root.hexsha):]
         copy_commit(faux_repo, root,
-            f'{root_type} {root_shortsha} {root.message}{root_decor}')
+            f'{root_type} {root_shortsha} {root.summary}{root_decor}')
         created[root.binsha] = faux_repo.commit('HEAD')
 
         # Create branch one by one for each head (commits of interest).
